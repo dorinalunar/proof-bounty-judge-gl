@@ -2,19 +2,15 @@
 
 from genlayer import *
 import json
-
-# BountyPlatform — AI-audited bounty submissions with validator consensus.
-# Studio runtime: JSON string storage + eq_principle.prompt_comparative.
+from typing import Any
 
 MAX_BATCH_SIZE = 20
-SCHEMA_VERSION = 1
-
+SCHEMA_VERSION = 4  # Incremented schema version for the network
 
 def _sanitize(text: str) -> str:
     if not text:
         return ""
     return " ".join(str(text).replace('"', "'").split())
-
 
 def _dumps(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
@@ -45,7 +41,6 @@ def _evaluate_submission(description: str, criteria: str, proof_url: str) -> str
         'Return JSON with exactly: {"is_approved": true/false, "reasoning": "short explanation"}'
     )
 
-    # Studio std may expose exec_prompt; newer runners use nondet.exec_prompt
     try:
         result = gl.nondet.exec_prompt(prompt, response_format="json")
     except Exception:
@@ -65,7 +60,7 @@ def _evaluate_submission(description: str, criteria: str, proof_url: str) -> str
     return _dumps({"is_approved": approved, "reasoning": reasoning})
 
 
-class BountyPlatform(gl.Contract):
+class ProofBountyJudge(gl.Contract):
     owner: str
     validators_json: str
     bounties_json: str
@@ -95,6 +90,12 @@ class BountyPlatform(gl.Contract):
         n = int(getattr(self, counter_field)) + 1
         setattr(self, counter_field, str(n))
         return str(n)
+
+    def _ensure_bool(self, value: Any) -> bool:
+        """Strict type check to avoid truthy bugs with strings."""
+        if isinstance(value, bool):
+            return value
+        raise Exception("ERR_INVALID_APPROVAL_TYPE")
 
     @gl.public.write
     def add_validator(self, address: str) -> None:
@@ -188,6 +189,11 @@ class BountyPlatform(gl.Contract):
             raise Exception("ERR_NOT_FOUND")
 
         sub = submissions[submission_id]
+        
+        # PROTECTION: Block repeated checks for already resolved submissions
+        if sub.get("status") != "PENDING":
+            raise Exception("ERR_SUBMISSION_ALREADY_RESOLVED")
+
         bounties = self._load("bounties_json")
         bounty = bounties.get(sub["bounty_id"])
         if not bounty:
@@ -209,9 +215,9 @@ class BountyPlatform(gl.Contract):
                 ),
             )
         except Exception:
-            # Fallback for Studio builds that only expose strict_eq helpers
             result_json = gl.eq_principle_strict_eq(leader_fn)
 
+        # result_json is either a dict or a JSON string
         if isinstance(result_json, dict):
             result = result_json
         else:
@@ -220,13 +226,18 @@ class BountyPlatform(gl.Contract):
             except Exception:
                 result = {"is_approved": False, "reasoning": "ERR_CONSENSUS_PARSE"}
 
-        approved = bool(result.get("is_approved", False))
+        # -------- strict validation of is_approved ----------
+        raw_approval = result.get("is_approved", False)
+        approved = self._ensure_bool(raw_approval)  # raises ERR_INVALID_APPROVAL_TYPE if not bool
+
+        # ---------- saving to state -------------------------
         reasoning = _sanitize(str(result.get("reasoning", "")))[:500]
 
         sub["leader_result"] = {"is_approved": approved, "reasoning": reasoning}
         sub["status"] = "APPROVED" if approved else "REJECTED"
         sub["resolution_reason"] = reasoning
         sub["last_checked_at"] = int(getattr(gl.block, "timestamp", 0) or 0)
+
         submissions[submission_id] = sub
         self._save("submissions_json", submissions)
         return approved
@@ -236,7 +247,9 @@ class BountyPlatform(gl.Contract):
         caller = str(gl.message.sender_address)
         if not self._is_validator(caller):
             raise Exception("ERR_UNAUTHORIZED_VALIDATOR")
-        return self._run_cross_check(submission_id)
+            
+        raw_approved = self._run_cross_check(submission_id)
+        return self._ensure_bool(raw_approved)
 
     @gl.public.write
     def cross_check_batch(self, submission_ids_json: str) -> str:
@@ -257,22 +270,46 @@ class BountyPlatform(gl.Contract):
         for s_id in ids:
             sid = str(s_id)
             try:
-                is_approved = self._run_cross_check(sid)
+                raw_approved = self._run_cross_check(sid)
+                is_approved = self._ensure_bool(raw_approved)
+                
                 submissions = self._load("submissions_json")
                 status = submissions.get(sid, {}).get("status", "NOT_FOUND")
-                results.append(
-                    {"submission_id": sid, "is_approved": is_approved, "status": status}
-                )
+                
+                results.append({
+                    "submission_id": sid, 
+                    "is_approved": is_approved, 
+                    "status": status
+                })
             except Exception as exc:
-                results.append(
-                    {
-                        "submission_id": sid,
-                        "is_approved": False,
-                        "status": "ERROR_EXECUTION",
-                        "reason": _sanitize(str(exc))[:120],
-                    }
-                )
+                results.append({
+                    "submission_id": sid,
+                    "is_approved": False,
+                    "status": "ERROR_EXECUTION",
+                    "reason": _sanitize(str(exc))[:120],
+                })
         return _dumps(results)
+
+    @gl.public.write
+    def migrate_submission_types(self) -> str:
+        """Converts old string 'true'/'false' into actual booleans."""
+        caller = str(gl.message.sender_address)
+        if caller != self.owner:
+            raise Exception("ERR_UNAUTHORIZED")
+
+        submissions = self._load("submissions_json")
+        migrated_count = 0
+
+        for sid, sub in submissions.items():
+            if "leader_result" in sub and isinstance(sub["leader_result"].get("is_approved"), str):
+                val = sub["leader_result"]["is_approved"].lower()
+                sub["leader_result"]["is_approved"] = (val == "true")
+                migrated_count += 1
+
+        if migrated_count:
+            self._save("submissions_json", submissions)
+
+        return f"Migrated {migrated_count} submissions."
 
     @gl.public.view
     def get_platform_config(self) -> str:
