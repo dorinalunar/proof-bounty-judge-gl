@@ -45,27 +45,3 @@ sequenceDiagram
     AI-->>Contract: Verdict + reasoning
     Contract->>Contract: Validate boolean type (_ensure_bool)
     Contract->>Contract: Store status (APPROVED/REJECTED) & emit audit data
-
-# Create a new bounty with description, criteria, and reward
-create_bounty(description: str, criteria: str, reward_amount: str) -> str
-
-# Toggle bounty active status (Creator or Owner only)
-set_bounty_active(bounty_id: str, is_active: bool) -> None
-
-# Submit work evidence for an active bounty
-submit_work(bounty_id: str, proof_url: str) -> str
-
-# AI & consensus evaluation of a single submission (Validator only)
-cross_check(submission_id: str) -> bool
-
-# Batch evaluation of multiple submissions (Validator only)
-cross_check_batch(submission_ids_json: str) -> str
-
-# Migrate legacy 'true'/'false' strings to native booleans (Owner only)
-migrate_submission_types() -> str
-
-# Add a validator address to the registry (Owner only)
-add_validator(address: str) -> None
-
-# Remove a validator address from the registry (Owner only)
-remove_validator(address: str) -> None
