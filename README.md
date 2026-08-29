@@ -19,7 +19,7 @@ The contract uses GenLayer’s native web access and Equivalence Principle-based
 * ⚡ **Batch verification** — supports checking multiple submissions in a single transaction (`cross_check_batch`) up to a configurable batch limit (`MAX_BATCH_SIZE` = 20).
 * 🔐 **Validator-gated execution** — restricts verification execution to an authorized validator registry managed by the contract owner.
 * 🔄 **State Migration Support** — includes a dedicated migration endpoint (`migrate_submission_types`) to normalize legacy text-based status representations into native types across updates.
-* 📑 **Audit-friendly views** — exposes lightweight status queries and detailed audit endpoints (`SCHEMA_VERSION` = 4):
+* 📑 **Audit-friendly views** — exposes lightweight status queries and detailed audit endpoints (`SCHEMA_VERSION` = 5):
   * Includes the `migrate_submission_types` endpoint to normalise legacy data.
 
 ---
