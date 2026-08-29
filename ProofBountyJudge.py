@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 MAX_BATCH_SIZE = 20
-SCHEMA_VERSION = 4  # Incremented schema version for the network
+SCHEMA_VERSION = 5  # Incremented schema version for strict validation update
 
 def _sanitize(text: str) -> str:
     if not text:
@@ -55,7 +55,14 @@ def _evaluate_submission(description: str, criteria: str, proof_url: str) -> str
     if not isinstance(result, dict):
         result = {"is_approved": False, "reasoning": "ERR_NON_DICT"}
 
-    approved = bool(result.get("is_approved", False))
+    # Strict type checking & Fail-Closed Guard:
+    # Only strict JSON boolean (True / False) is permitted. Strings like "false", ints, or None fail closed.
+    raw_approved = result.get("is_approved")
+    if type(raw_approved) is bool:
+        approved = raw_approved
+    else:
+        approved = False
+
     reasoning = _sanitize(str(result.get("reasoning", "")))[:500]
     return _dumps({"is_approved": approved, "reasoning": reasoning})
 
@@ -92,8 +99,8 @@ class ProofBountyJudge(gl.Contract):
         return str(n)
 
     def _ensure_bool(self, value: Any) -> bool:
-        """Strict type check to avoid truthy bugs with strings."""
-        if isinstance(value, bool):
+        """Strict type check to enforce native booleans and prevent truthy string bugs."""
+        if type(value) is bool:
             return value
         raise Exception("ERR_INVALID_APPROVAL_TYPE")
 
@@ -151,7 +158,10 @@ class ProofBountyJudge(gl.Contract):
         bounty = bounties[bounty_id]
         if str(gl.message.sender_address) not in (bounty["creator"], self.owner):
             raise Exception("ERR_UNAUTHORIZED")
-        bounty["is_active"] = bool(is_active)
+        
+        # Тут застосована сувора перевірка типу
+        bounty["is_active"] = self._ensure_bool(is_active)
+        
         bounties[bounty_id] = bounty
         self._save("bounties_json", bounties)
 
@@ -189,8 +199,7 @@ class ProofBountyJudge(gl.Contract):
             raise Exception("ERR_NOT_FOUND")
 
         sub = submissions[submission_id]
-        
-        # PROTECTION: Block repeated checks for already resolved submissions
+
         if sub.get("status") != "PENDING":
             raise Exception("ERR_SUBMISSION_ALREADY_RESOLVED")
 
@@ -215,9 +224,8 @@ class ProofBountyJudge(gl.Contract):
                 ),
             )
         except Exception:
-            result_json = gl.eq_principle_strict_eq(leader_fn)
+            result_json = gl.eq_principle.strict_eq(leader_fn)
 
-        # result_json is either a dict or a JSON string
         if isinstance(result_json, dict):
             result = result_json
         else:
@@ -226,11 +234,10 @@ class ProofBountyJudge(gl.Contract):
             except Exception:
                 result = {"is_approved": False, "reasoning": "ERR_CONSENSUS_PARSE"}
 
-        # -------- strict validation of is_approved ----------
-        raw_approval = result.get("is_approved", False)
-        approved = self._ensure_bool(raw_approval)  # raises ERR_INVALID_APPROVAL_TYPE if not bool
+        # Strict validation of is_approved
+        raw_approval = result.get("is_approved")
+        approved = self._ensure_bool(raw_approval)
 
-        # ---------- saving to state -------------------------
         reasoning = _sanitize(str(result.get("reasoning", "")))[:500]
 
         sub["leader_result"] = {"is_approved": approved, "reasoning": reasoning}
@@ -247,7 +254,7 @@ class ProofBountyJudge(gl.Contract):
         caller = str(gl.message.sender_address)
         if not self._is_validator(caller):
             raise Exception("ERR_UNAUTHORIZED_VALIDATOR")
-            
+
         raw_approved = self._run_cross_check(submission_id)
         return self._ensure_bool(raw_approved)
 
@@ -272,10 +279,10 @@ class ProofBountyJudge(gl.Contract):
             try:
                 raw_approved = self._run_cross_check(sid)
                 is_approved = self._ensure_bool(raw_approved)
-                
+
                 submissions = self._load("submissions_json")
                 status = submissions.get(sid, {}).get("status", "NOT_FOUND")
-                
+
                 results.append({
                     "submission_id": sid, 
                     "is_approved": is_approved, 
@@ -292,7 +299,7 @@ class ProofBountyJudge(gl.Contract):
 
     @gl.public.write
     def migrate_submission_types(self) -> str:
-        """Converts old string 'true'/'false' into actual booleans."""
+        """Converts legacy string 'true'/'false' into actual strict booleans."""
         caller = str(gl.message.sender_address)
         if caller != self.owner:
             raise Exception("ERR_UNAUTHORIZED")
